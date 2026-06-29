@@ -1,0 +1,1455 @@
+openapi: '3.1.0'
+
+info:
+  title: Marketplace API
+  description: |
+    Multi-vendor marketplace MVP. Sellers list products; buyers discover, cart, and
+    pay via Stripe Connect. All money values are **integer cents** (never floats).
+    Auth is a JWT in an `httpOnly` `SameSite=Strict` cookie — never a Bearer token
+    or localStorage (see ADR-0001). Errors follow RFC 7807 Problem Details with
+    `application/problem+json` (see ADR-0004).
+  version: '1.0.0'
+
+servers:
+  - url: /
+    description: Express API server (same origin as web client)
+
+tags:
+  - name: auth
+    description: Registration, login, logout, password reset
+  - name: me
+    description: Authenticated user's own profile
+  - name: categories
+    description: Product categories (seeded fixed list)
+  - name: products
+    description: Product catalog — public discovery and seller management
+  - name: cart
+    description: Authenticated buyer's server-side cart
+  - name: checkout
+    description: Payment initiation and Stripe webhook handling
+  - name: orders
+    description: Order history and status
+  - name: seller
+    description: Seller-scoped product and order views
+  - name: admin
+    description: Admin-only management endpoints
+
+# ============================================================
+# COMPONENTS
+# ============================================================
+components:
+
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: auth_token
+      description: |
+        JWT signed with JWT_SECRET. Written to an `httpOnly` `Secure`
+        `SameSite=Strict` cookie named `auth_token` on login. Expires after 7 days.
+        The token is never present in a response body or accessible to JavaScript.
+
+  # ----------------------------------------------------------
+  # Schemas
+  # ----------------------------------------------------------
+  schemas:
+
+    # ---- Primitives ----
+
+    Money:
+      type: integer
+      minimum: 0
+      description: Amount in integer cents (never floats). Use minimum:1 for prices.
+      example: 4999
+
+    Cursor:
+      type: string
+      description: Opaque base64 cursor for keyset pagination.
+
+    Role:
+      type: string
+      enum: [buyer, seller, admin]
+
+    OrderStatus:
+      type: string
+      enum: [pending_payment, paid, shipped, delivered, cancelled]
+
+    # ---- Domain resources ----
+
+    User:
+      type: object
+      required: [id, email, displayName, role, stripeOnboardingDone, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        displayName:
+          type: string
+        role:
+          $ref: '#/components/schemas/Role'
+        stripeAccountId:
+          type: ['string', 'null']
+          description: Stripe Connect Express account ID. Only set for sellers.
+        stripeOnboardingDone:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+
+    Category:
+      type: object
+      required: [id, name, slug]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        slug:
+          type: string
+
+    Product:
+      type: object
+      required:
+        - id
+        - sellerId
+        - categoryId
+        - title
+        - description
+        - priceCents
+        - shippingCents
+        - stockQuantity
+        - imageUrl
+        - published
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        sellerId:
+          type: string
+          format: uuid
+        categoryId:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        priceCents:
+          type: integer
+          minimum: 1
+          description: Product price in integer cents
+        shippingCents:
+          type: integer
+          minimum: 0
+          description: Flat shipping cost in integer cents
+        stockQuantity:
+          type: integer
+          minimum: 0
+        imageUrl:
+          type: string
+          format: uri
+        published:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ShippingAddress:
+      type: object
+      required: [name, line1, city, state, postal, country]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        line1:
+          type: string
+          minLength: 1
+          maxLength: 200
+        city:
+          type: string
+          minLength: 1
+        state:
+          type: string
+          minLength: 1
+        postal:
+          type: string
+          minLength: 1
+        country:
+          type: string
+          pattern: '^[A-Z]{2}$'
+          description: ISO 3166-1 alpha-2 country code (e.g. "US", "GB")
+
+    CartLineItem:
+      type: object
+      required:
+        - productId
+        - productTitle
+        - quantity
+        - snapshotPriceCents
+        - shippingCents
+        - lineTotalCents
+      properties:
+        productId:
+          type: string
+          format: uuid
+        productTitle:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+        snapshotPriceCents:
+          type: integer
+          minimum: 0
+          description: Price at time the item was added (snapshot, never updated)
+        shippingCents:
+          type: integer
+          minimum: 0
+          description: Current shipping cost for this product
+        lineTotalCents:
+          type: integer
+          minimum: 0
+          description: "(snapshotPriceCents + shippingCents) × quantity — computed server-side"
+
+    Cart:
+      type: object
+      required: [userId, items, totalCents]
+      properties:
+        userId:
+          type: string
+          format: uuid
+        sellerId:
+          type: ['string', 'null']
+          format: uuid
+          description: Seller whose products are in the cart. null when cart is empty.
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CartLineItem'
+        totalCents:
+          type: integer
+          minimum: 0
+          description: Sum of all lineTotalCents — computed server-side on every read
+
+    OrderItem:
+      type: object
+      required: [id, orderId, productId, quantity, unitPriceCents]
+      properties:
+        id:
+          type: string
+          format: uuid
+        orderId:
+          type: string
+          format: uuid
+        productId:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+          minimum: 1
+        unitPriceCents:
+          type: integer
+          minimum: 1
+          description: Price per unit in integer cents at time of order
+
+    Order:
+      type: object
+      required:
+        - id
+        - buyerId
+        - sellerId
+        - status
+        - totalCents
+        - shippingAddress
+        - stripePaymentIntentId
+        - items
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        buyerId:
+          type: string
+          format: uuid
+        sellerId:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/OrderStatus'
+        totalCents:
+          type: integer
+          minimum: 1
+          description: Authoritative total in integer cents, set at order creation
+        shippingAddress:
+          $ref: '#/components/schemas/ShippingAddress'
+        stripePaymentIntentId:
+          type: string
+        trackingNumber:
+          type: ['string', 'null']
+          maxLength: 100
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderItem'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    OrderSummary:
+      description: Lightweight order representation used in list responses
+      type: object
+      required: [id, status, totalCents, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/OrderStatus'
+        totalCents:
+          type: integer
+          minimum: 1
+        createdAt:
+          type: string
+          format: date-time
+
+    AdminUser:
+      description: User as seen by admins — no passwordHash
+      type: object
+      required: [id, email, displayName, role, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        displayName:
+          type: string
+        role:
+          $ref: '#/components/schemas/Role'
+        createdAt:
+          type: string
+          format: date-time
+
+    ProblemDetails:
+      description: |
+        RFC 7807 Problem Details object. Returned with Content-Type
+        `application/problem+json` on all 4xx and 5xx responses.
+        The `type` URI is a stable machine-readable error code clients
+        can branch on without parsing `detail` strings (see ADR-0004).
+      type: object
+      required: [type, title, status, detail]
+      properties:
+        type:
+          type: string
+          description: |
+            URI identifying the problem type. Follows the pattern
+            `urn:marketplace:error:<code>`.
+          example: 'urn:marketplace:error:conflict'
+        title:
+          type: string
+          description: Human-readable summary of the problem type (stable per type URI)
+          example: 'Conflict'
+        status:
+          type: integer
+          description: The HTTP status code for this occurrence
+          example: 409
+        detail:
+          type: string
+          description: Human-readable explanation for this specific occurrence
+          example: 'That email address is already registered.'
+
+  # ----------------------------------------------------------
+  # Reusable responses
+  # ----------------------------------------------------------
+  responses:
+
+    Unauthorized:
+      description: Missing or invalid auth_token cookie
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: 'urn:marketplace:error:unauthorized'
+            title: Unauthorized
+            status: 401
+            detail: 'Authentication is required. Please log in.'
+
+    Forbidden:
+      description: Authenticated but insufficient role for this operation
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: 'urn:marketplace:error:forbidden'
+            title: Forbidden
+            status: 403
+            detail: 'You do not have permission to perform this action.'
+
+    NotFound:
+      description: Resource not found or not accessible to the caller
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: 'urn:marketplace:error:not-found'
+            title: Not Found
+            status: 404
+            detail: 'The requested resource does not exist.'
+
+    Conflict:
+      description: Conflict with current resource state (e.g. duplicate email)
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: 'urn:marketplace:error:conflict'
+            title: Conflict
+            status: 409
+            detail: 'That email address is already registered.'
+
+    UnprocessableEntity:
+      description: Request body failed validation
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: 'urn:marketplace:error:validation'
+            title: Unprocessable Entity
+            status: 422
+            detail: 'priceCents must be a positive integer.'
+
+    BadRequest:
+      description: Bad request (e.g. expired or already-used token)
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: 'urn:marketplace:error:invalid-token'
+            title: Bad Request
+            status: 400
+            detail: 'The password reset token is expired or has already been used.'
+
+  # ----------------------------------------------------------
+  # Reusable parameters
+  # ----------------------------------------------------------
+  parameters:
+
+    cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Pagination cursor returned as nextCursor in a previous response
+      schema:
+        $ref: '#/components/schemas/Cursor'
+
+    limit:
+      name: limit
+      in: query
+      required: false
+      description: Maximum items to return (default 20, max 100)
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+
+    productId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+    orderId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+# ============================================================
+# PATHS
+# ============================================================
+paths:
+
+  # -------- AUTH --------
+
+  /auth/register/buyer:
+    post:
+      tags: [auth]
+      operationId: registerBuyer
+      security: []
+      summary: Register a new buyer account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, displayName]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  minLength: 8
+                displayName:
+                  type: string
+                  minLength: 1
+      responses:
+        '201':
+          description: Buyer registered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /auth/register/seller:
+    post:
+      tags: [auth]
+      operationId: registerSeller
+      security: []
+      summary: Register a new seller account and initiate Stripe Connect onboarding
+      description: |
+        Creates a seller-role user, creates a Stripe Connect Express account, and
+        returns a one-time onboarding URL. The client must redirect the seller to
+        `connectOnboardingUrl`. The seller cannot publish products until onboarding
+        is complete.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, displayName]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  minLength: 8
+                displayName:
+                  type: string
+                  minLength: 1
+      responses:
+        '201':
+          description: Seller registered; redirect to connectOnboardingUrl
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user, connectOnboardingUrl]
+                properties:
+                  user:
+                    $ref: '#/components/schemas/User'
+                  connectOnboardingUrl:
+                    type: string
+                    format: uri
+                    description: Stripe Connect Express onboarding redirect URL
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      security: []
+      summary: Log in with email and password
+      description: |
+        Verifies credentials and sets an `auth_token` httpOnly cookie on success.
+        The token is never present in the response body.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+      responses:
+        '200':
+          description: Login successful; auth_token cookie is set
+          headers:
+            Set-Cookie:
+              description: httpOnly Secure SameSite=Strict auth_token cookie
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      summary: Clear the auth_token cookie
+      security:
+        - cookieAuth: []
+      responses:
+        '204':
+          description: Logged out; auth_token cookie cleared
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/password-reset/request:
+    post:
+      tags: [auth]
+      operationId: requestPasswordReset
+      security: []
+      summary: Send a password reset email
+      description: |
+        Always returns 204 regardless of whether the email is registered,
+        to avoid leaking account existence.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+      responses:
+        '204':
+          description: Reset email dispatched (if an account with that email exists)
+
+  /auth/password-reset/confirm:
+    post:
+      tags: [auth]
+      operationId: confirmPasswordReset
+      security: []
+      summary: Set a new password using a one-time reset token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, newPassword]
+              properties:
+                token:
+                  type: string
+                  description: The reset token delivered via email
+                newPassword:
+                  type: string
+                  minLength: 8
+      responses:
+        '204':
+          description: Password updated; token is now invalidated
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  # -------- ME --------
+
+  /me:
+    get:
+      tags: [me]
+      operationId: getProfile
+      summary: Get the authenticated user's profile
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Authenticated user's profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    patch:
+      tags: [me]
+      operationId: updateProfile
+      summary: Update display name or email (requires current password)
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword]
+              properties:
+                displayName:
+                  type: string
+                  minLength: 1
+                email:
+                  type: string
+                  format: email
+                currentPassword:
+                  type: string
+                  description: Current password required for any profile change
+      responses:
+        '200':
+          description: Profile updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  # -------- CATEGORIES --------
+
+  /categories:
+    get:
+      tags: [categories]
+      operationId: listCategories
+      security: []
+      summary: List all product categories
+      description: Returns the complete seeded category list. No auth required.
+      responses:
+        '200':
+          description: All categories
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Category'
+
+  # -------- PRODUCTS --------
+
+  /products:
+    get:
+      tags: [products]
+      operationId: listProducts
+      security: []
+      summary: Browse published products with optional search and category filter
+      description: |
+        Returns published products only. Full-text search is ranked by PostgreSQL
+        `ts_rank`; category filter is applied as an AND condition with search.
+        Cursor-based pagination; default page size 20.
+      parameters:
+        - name: q
+          in: query
+          required: false
+          description: Full-text search term
+          schema:
+            type: string
+        - name: categoryId
+          in: query
+          required: false
+          description: Filter by category ID
+          schema:
+            type: string
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses:
+        '200':
+          description: Paginated list of published products
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Product'
+                  nextCursor:
+                    $ref: '#/components/schemas/Cursor'
+
+    post:
+      tags: [products]
+      operationId: createProduct
+      summary: Create a new product listing (seller only, starts unpublished)
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - title
+                - description
+                - priceCents
+                - shippingCents
+                - categoryId
+                - stockQuantity
+                - imageUrl
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                description:
+                  type: string
+                  minLength: 1
+                  maxLength: 5000
+                priceCents:
+                  type: integer
+                  minimum: 1
+                  description: Product price in integer cents
+                shippingCents:
+                  type: integer
+                  minimum: 0
+                  description: Flat shipping cost in integer cents
+                categoryId:
+                  type: string
+                stockQuantity:
+                  type: integer
+                  minimum: 0
+                imageUrl:
+                  type: string
+                  format: uri
+      responses:
+        '201':
+          description: Product created in unpublished state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /products/{id}:
+    get:
+      tags: [products]
+      operationId: getProduct
+      security: []
+      summary: Get a product by ID
+      description: |
+        Returns published products to all callers. The owning seller and admins
+        can also retrieve unpublished products. Returns 404 when the product is
+        unpublished and the caller is neither owner nor admin.
+      parameters:
+        - $ref: '#/components/parameters/productId'
+      responses:
+        '200':
+          description: Product detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    patch:
+      tags: [products]
+      operationId: updateProduct
+      summary: Update product fields (owning seller only)
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/productId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                description:
+                  type: string
+                  minLength: 1
+                  maxLength: 5000
+                priceCents:
+                  type: integer
+                  minimum: 1
+                shippingCents:
+                  type: integer
+                  minimum: 0
+                categoryId:
+                  type: string
+                stockQuantity:
+                  type: integer
+                  minimum: 0
+                imageUrl:
+                  type: string
+                  format: uri
+      responses:
+        '200':
+          description: Product updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+    delete:
+      tags: [products]
+      operationId: deleteProduct
+      summary: Permanently delete a product (admin only)
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/productId'
+      responses:
+        '204':
+          description: Product permanently deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /products/{id}/published:
+    patch:
+      tags: [products]
+      operationId: setProductPublished
+      summary: Publish or unpublish a product (owning seller or admin)
+      description: |
+        Before publishing, validates: imageUrl is set, priceCents > 0, and
+        (for seller callers) Stripe Connect onboarding is complete.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/productId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [published]
+              properties:
+                published:
+                  type: boolean
+      responses:
+        '200':
+          description: Product publish state updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  # -------- CART --------
+
+  /cart:
+    get:
+      tags: [cart]
+      operationId: getCart
+      summary: Get the authenticated buyer's current cart
+      description: |
+        Returns an empty cart (items=[], sellerId=null, totalCents=0) if no
+        items have been added. Never returns 404.
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Current cart state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cart'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /cart/items:
+    post:
+      tags: [cart]
+      operationId: addCartItem
+      summary: Add a product to the cart (or increment quantity if already present)
+      description: |
+        Enforces the single-seller constraint — a 409 is returned if the cart
+        already contains items from a different seller. Also returns 409 if
+        the product is out of stock.
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [productId, quantity]
+              properties:
+                productId:
+                  type: string
+                  format: uuid
+                quantity:
+                  type: integer
+                  minimum: 1
+      responses:
+        '200':
+          description: Cart after the item was added
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cart'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: |
+            Product out of stock (`urn:marketplace:error:conflict`) or cart already
+            contains items from a different seller.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /cart/items/{productId}:
+    patch:
+      tags: [cart]
+      operationId: updateCartItem
+      summary: Update the quantity of a line item
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: productId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quantity]
+              properties:
+                quantity:
+                  type: integer
+                  minimum: 1
+      responses:
+        '200':
+          description: Cart after the quantity was updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cart'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+    delete:
+      tags: [cart]
+      operationId: removeCartItem
+      summary: Remove a product from the cart
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: productId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Cart after the item was removed (may now be empty)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cart'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # -------- CHECKOUT --------
+
+  /checkout:
+    post:
+      tags: [checkout]
+      operationId: initiateCheckout
+      summary: Create a Stripe Payment Intent for the current cart
+      description: |
+        Validates the cart (non-empty, seller onboarded) and shipping address, then
+        creates a Stripe Payment Intent. Returns `clientSecret` for Stripe.js to
+        complete the payment client-side. **The server never accepts a price from
+        the client** — totalCents always comes from the cart.
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [shippingAddress]
+              properties:
+                shippingAddress:
+                  $ref: '#/components/schemas/ShippingAddress'
+      responses:
+        '200':
+          description: Payment Intent created; use clientSecret with Stripe.js
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [clientSecret, paymentIntentId]
+                properties:
+                  clientSecret:
+                    type: string
+                    description: Stripe Payment Intent client secret for Stripe.js
+                  paymentIntentId:
+                    type: string
+                    description: Stripe Payment Intent ID stored for idempotency
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /stripe/webhooks:
+    post:
+      tags: [checkout]
+      operationId: handleStripeWebhook
+      security: []
+      summary: Receive Stripe webhook events
+      description: |
+        Verifies the `Stripe-Signature` header and processes
+        `payment_intent.succeeded` events idempotently. All events return 200
+        (including already-processed events) to prevent Stripe retries. Only
+        signature verification failures return 400.
+      parameters:
+        - name: Stripe-Signature
+          in: header
+          required: true
+          description: HMAC signature header from Stripe for payload verification
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Raw Stripe event payload (structure determined by Stripe)
+      responses:
+        '200':
+          description: Event acknowledged (processed or already seen — idempotent)
+        '400':
+          description: Webhook signature verification failed
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: 'urn:marketplace:error:webhook-signature'
+                title: Bad Request
+                status: 400
+                detail: 'Webhook signature verification failed.'
+
+  # -------- ORDERS (buyer) --------
+
+  /orders:
+    get:
+      tags: [orders]
+      operationId: listMyOrders
+      summary: List the authenticated buyer's orders (sorted newest first)
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/cursor'
+      responses:
+        '200':
+          description: Paginated order list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/OrderSummary'
+                  nextCursor:
+                    $ref: '#/components/schemas/Cursor'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /orders/{id}:
+    get:
+      tags: [orders]
+      operationId: getOrder
+      summary: Get full order detail
+      description: |
+        Access is scoped by role:
+        - **Buyer**: only their own orders.
+        - **Seller**: only orders containing their products; line items scoped to their products.
+        - **Admin**: unrestricted.
+
+        Returns 404 when the order does not exist or the caller is not authorised.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/orderId'
+      responses:
+        '200':
+          description: Full order detail including line items and shipping address
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # -------- SELLER --------
+
+  /seller/products:
+    get:
+      tags: [seller]
+      operationId: listSellerProducts
+      summary: List all products owned by the authenticated seller (including unpublished)
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses:
+        '200':
+          description: Paginated list of this seller's products
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Product'
+                  nextCursor:
+                    $ref: '#/components/schemas/Cursor'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /seller/orders:
+    get:
+      tags: [seller]
+      operationId: listSellerOrders
+      summary: List orders containing the authenticated seller's products
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/cursor'
+      responses:
+        '200':
+          description: Paginated list of orders for this seller (sorted newest first)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/OrderSummary'
+                  nextCursor:
+                    $ref: '#/components/schemas/Cursor'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /orders/{id}/ship:
+    patch:
+      tags: [seller]
+      operationId: markOrderShipped
+      summary: Mark an order as shipped (owning seller only)
+      description: |
+        Transitions status from `paid` → `shipped`. Returns 409 if the current
+        status is not `paid`. Optionally records a tracking number (max 100 chars).
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/orderId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                trackingNumber:
+                  type: string
+                  maxLength: 100
+      responses:
+        '200':
+          description: Order status transitioned to shipped
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  # -------- ADMIN --------
+
+  /admin/products:
+    get:
+      tags: [admin]
+      operationId: adminListProducts
+      summary: List all products across all sellers with search and status filter (admin only)
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: q
+          in: query
+          required: false
+          description: Search by product title
+          schema:
+            type: string
+        - name: status
+          in: query
+          required: false
+          description: Filter by publish status
+          schema:
+            type: string
+            enum: [all, published, unpublished]
+            default: all
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses:
+        '200':
+          description: Paginated list of all products
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Product'
+                  nextCursor:
+                    $ref: '#/components/schemas/Cursor'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/orders:
+    get:
+      tags: [admin]
+      operationId: adminListOrders
+      summary: List all orders across all buyers and sellers (admin only)
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses:
+        '200':
+          description: Paginated list of all orders
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/OrderSummary'
+                  nextCursor:
+                    $ref: '#/components/schemas/Cursor'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/users:
+    get:
+      tags: [admin]
+      operationId: adminListUsers
+      summary: List all registered users with role and registration date (admin only)
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/cursor'
+        - $ref: '#/components/parameters/limit'
+      responses:
+        '200':
+          description: Paginated list of all users
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminUser'
+                  nextCursor:
+                    $ref: '#/components/schemas/Cursor'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'

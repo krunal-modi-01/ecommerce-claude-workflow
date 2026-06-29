@@ -27,6 +27,12 @@ Single test: `npm test -- --reporter=verbose <path-or-test-name-pattern>`
 - All prices/tax/totals computed SERVER-side. The client never sets a price.
 - Modules communicate through their published interface, never another module's internals.
 - Migrations are forward-only and human-approved before apply.
+- FROZEN ARTIFACTS — read-only to all implementation work:
+  /docs/adr/**, /docs/prd/**, /api/openapi.yaml, /src/db/schema.ts
+  Implementers READ these; they NEVER edit them. If one seems wrong or
+  under-specified during build, STOP and escalate to the human — do not
+  "fix" it by editing the spec or weakening a test.
+
 
 ## Conventions
 - Conventional commits (feat/fix/chore/...). One concern per PR.
