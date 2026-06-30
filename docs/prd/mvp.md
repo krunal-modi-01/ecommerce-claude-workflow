@@ -92,6 +92,7 @@ The following assumptions were made to keep v1 small. Each is marked **[ASSUMPTI
 
 ### Acceptance Criteria
 
+- All web pages for this feature render inside the shared `AppShell` layout (`web/src/components/layout/AppShell.tsx`); the header shows the current user's display name, role badge, and logout control on every page.
 - Full-text search is implemented via PostgreSQL `tsvector` over the product `title` and `description` columns, ranked by `ts_rank`. **[A7]**
 - Category filter is applied as an `AND` condition with any active search query.
 - Listing endpoint uses cursor-based pagination; default page size is 20.
@@ -129,6 +130,7 @@ The following assumptions were made to keep v1 small. Each is marked **[ASSUMPTI
 
 ### Acceptance Criteria
 
+- The cart page renders inside the shared `AppShell` layout; the header shows the current user's display name, role badge, and logout control.
 - Cart is stored server-side, keyed to the authenticated user's ID. **[A9]**
 - Adding a product that has `stock = 0` returns HTTP 409 with a clear error message. **[A5]**
 - Each cart line item records a price snapshot (the price at time of add). The buyer sees the price they originally added, even if the seller later changes the price. The snapshot does not prevent purchase if the current price differs.
@@ -162,6 +164,7 @@ The following assumptions were made to keep v1 small. Each is marked **[ASSUMPTI
 
 ### Acceptance Criteria
 
+- The checkout page renders inside the shared `AppShell` layout; the header shows the current user's display name, role badge, and logout control.
 - Stripe Payment Intent is created server-side with `amount` in integer cents. The client receives only a `client_secret` to complete payment in the browser; the server never accepts an amount from the client. **[A1]**
 - Stripe Connect transfer to the seller's connected account is triggered by the `payment_intent.succeeded` webhook event. **[A1, A10]**
 - Required shipping address fields: full name, address line 1, city, state/province, postal code, country (ISO 3166-1 alpha-2).
@@ -198,6 +201,7 @@ The following assumptions were made to keep v1 small. Each is marked **[ASSUMPTI
 
 ### Acceptance Criteria
 
+- All order pages (buyer history, buyer detail, seller order list, seller order detail) render inside the shared `AppShell` layout; the header shows the current user's display name, role badge, and logout control.
 - Order lifecycle statuses (in order): `pending_payment` → `paid` → `shipped` → `delivered` → `cancelled`. Status transitions are enforced server-side; the client cannot set an arbitrary status.
 - Buyer order list is sorted by `created_at` descending, paginated at 20 per page.
 - Seller order view is scoped strictly to orders containing their own products. The seller cannot see any information about the buyer's other orders or other sellers' line items. **[A4]**

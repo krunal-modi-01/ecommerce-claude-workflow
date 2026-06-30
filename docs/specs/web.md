@@ -91,6 +91,7 @@ The full API contract is defined in `api/openapi.yaml`. This spec lists consumed
 
 ## Internal Invariants
 
+- Every page in the Pages table above **except** the standalone auth pages (`/login`, `/register`, `/register/seller`, `/forgot-password`, `/reset-password`) must be rendered as a child route inside the `<AppShell>` layout route (`web/src/components/layout/AppShell.tsx`). The AppShell header must be visible on every such page and must show the current user's display name, role badge, and logout control.
 - The app never constructs, reads, or forwards the JWT. Cookie handling is entirely browser-native.
 - Money values are displayed as formatted currency strings (e.g., `$12.99`), but all values passed to the API are integer cents.
 - The seller registration flow must redirect the user to the `connectOnboardingUrl` returned by the API immediately after account creation.

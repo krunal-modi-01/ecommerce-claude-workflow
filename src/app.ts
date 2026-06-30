@@ -1,6 +1,7 @@
 import express, { type NextFunction, type Request, type Response } from 'express'
 import cookieParser from 'cookie-parser'
 import { identityRouter } from './modules/identity'
+import { catalogRouter } from './modules/catalog'
 import { AppError } from './lib/errors'
 
 export const app = express()
@@ -8,6 +9,7 @@ export const app = express()
 app.use(express.json())
 app.use(cookieParser())
 app.use(identityRouter)
+app.use(catalogRouter)
 
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   if (err instanceof AppError) {

@@ -68,6 +68,7 @@ Admins can view and moderate products, view all orders, and view registered user
 
 ## Internal Invariants
 
+- Every page except `/login` renders inside a persistent admin shell (a layout component equivalent in structure to the web `AppShell`) that displays the current admin user's display name and a logout control in the header.
 - The app is deployed as a separate origin or sub-path (e.g., `admin.marketplace.com` or `/admin/`) so its routes do not conflict with `/web` routes.
 - Every page except `/login` redirects to `/login` if the `auth_token` cookie is absent or the decoded role is not `"admin"`. This check is performed client-side for UX (to avoid a flash), but the server enforces it independently on every request.
 - Unpublish is always reversible — the UI makes this clear (button label "Unpublish" vs "Permanently Delete").
