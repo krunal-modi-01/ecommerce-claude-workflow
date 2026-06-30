@@ -1,12 +1,19 @@
 import type { ButtonHTMLAttributes } from 'react'
+import { Link, type LinkProps } from 'react-router-dom'
 import { Spinner } from './Spinner'
 
+type ButtonVariant = 'primary' | 'secondary' | 'ghost'
+
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: 'primary' | 'secondary' | 'ghost'
+  variant?: ButtonVariant
   loading?: boolean
 }
 
-const variantClasses: Record<NonNullable<ButtonProps['variant']>, string> = {
+const btnBase =
+  'inline-flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium ' +
+  'transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2'
+
+const variantClasses: Record<ButtonVariant, string> = {
   primary:
     'bg-primary-600 text-white hover:bg-primary-700 focus-visible:ring-primary-500 border border-transparent',
   secondary:
@@ -29,8 +36,7 @@ export function Button({
       disabled={isDisabled}
       aria-busy={loading}
       className={[
-        'inline-flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium',
-        'transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2',
+        btnBase,
         'disabled:pointer-events-none disabled:opacity-50',
         variantClasses[variant],
         className,
@@ -40,5 +46,21 @@ export function Button({
       {loading && <Spinner size="sm" />}
       {children}
     </button>
+  )
+}
+
+interface LinkButtonProps extends Omit<LinkProps, 'className'> {
+  variant?: ButtonVariant
+  className?: string
+}
+
+export function LinkButton({ variant = 'primary', className = '', children, ...props }: LinkButtonProps) {
+  return (
+    <Link
+      className={[btnBase, variantClasses[variant], className].join(' ')}
+      {...props}
+    >
+      {children}
+    </Link>
   )
 }

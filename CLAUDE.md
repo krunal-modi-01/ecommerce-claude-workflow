@@ -37,6 +37,12 @@ Single test: `npm test -- --reporter=verbose <path-or-test-name-pattern>`
   ad-hoc inline styles for UI. If a needed primitive is missing, ADD it to the
   design system — never one-off it. Every interactive element has visible
   focus, hover, disabled, loading, empty, and error states.
+- Every web page except the standalone auth flows (/login, /register,
+  /register/seller, /forgot-password, /reset-password) MUST be a child route
+  inside <AppShell> (web/src/components/layout/AppShell.tsx). The AppShell
+  header must be visible and must show the current user's display name, role
+  badge, and logout control. Never add a new routed page outside this layout
+  without an explicit exception in the spec.
 
 ## Conventions
 - Conventional commits (feat/fix/chore/...). One concern per PR.

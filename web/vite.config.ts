@@ -14,6 +14,10 @@ export default defineConfig({
     proxy: {
       '/auth': { target: 'http://localhost:3000', changeOrigin: true },
       '/me': { target: 'http://localhost:3000', changeOrigin: true },
+      '/products': { target: 'http://localhost:3000', changeOrigin: true },
+      '/categories': { target: 'http://localhost:3000', changeOrigin: true },
+      '/seller': { target: 'http://localhost:3000', changeOrigin: true },
+      '/admin': { target: 'http://localhost:3000', changeOrigin: true },
     },
   },
 })
