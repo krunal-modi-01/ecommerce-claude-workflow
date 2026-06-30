@@ -32,7 +32,11 @@ Single test: `npm test -- --reporter=verbose <path-or-test-name-pattern>`
   Implementers READ these; they NEVER edit them. If one seems wrong or
   under-specified during build, STOP and escalate to the human — do not
   "fix" it by editing the spec or weakening a test.
-
+- All user-facing UI is built from the design system in web/src/components/ui
+  and the tokens in tailwind.config. No raw/unstyled HTML elements and no
+  ad-hoc inline styles for UI. If a needed primitive is missing, ADD it to the
+  design system — never one-off it. Every interactive element has visible
+  focus, hover, disabled, loading, empty, and error states.
 
 ## Conventions
 - Conventional commits (feat/fix/chore/...). One concern per PR.
