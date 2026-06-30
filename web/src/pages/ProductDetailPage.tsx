@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Alert, Badge, Button, Spinner } from '../components/ui'
 import { useAuth } from '../hooks/useAuth'
-import { ApiError, get } from '../lib/api'
+import { ApiError, get, post } from '../lib/api'
 import type { components } from '@api-types'
 
 type Product = components['schemas']['Product']
+type Cart = components['schemas']['Cart']
 
 function formatPrice(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`
@@ -14,9 +15,26 @@ function formatPrice(cents: number): string {
 export default function ProductDetailPage() {
   const { id } = useParams<{ id: string }>()
   const { user } = useAuth()
+  const navigate = useNavigate()
   const [product, setProduct] = useState<Product | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [addingToCart, setAddingToCart] = useState(false)
+  const [addError, setAddError] = useState<string | null>(null)
+
+  async function handleAddToCart() {
+    if (!product) return
+    setAddingToCart(true)
+    setAddError(null)
+    try {
+      await post<Cart>('/cart/items', { productId: product.id, quantity: 1 })
+      navigate('/cart')
+    } catch (err) {
+      setAddError(err instanceof ApiError ? err.detail : 'Failed to add to cart.')
+    } finally {
+      setAddingToCart(false)
+    }
+  }
 
   useEffect(() => {
     if (!id) return
@@ -110,13 +128,21 @@ export default function ProductDetailPage() {
               <p className="text-sm text-error-600 font-medium">Out of stock</p>
             )}
 
-            <Button
-              className="w-full mt-2"
-              disabled={product.stockQuantity === 0}
-              title="Cart functionality coming soon"
-            >
-              {product.stockQuantity === 0 ? 'Out of stock' : 'Add to cart'}
-            </Button>
+            {!isOwner && !isAdmin && (
+              <>
+                <Button
+                  className="w-full mt-2"
+                  disabled={product.stockQuantity === 0 || addingToCart}
+                  loading={addingToCart}
+                  onClick={() => void handleAddToCart()}
+                >
+                  {product.stockQuantity === 0 ? 'Out of stock' : 'Add to cart'}
+                </Button>
+                {addError && (
+                  <Alert variant="error" className="mt-2">{addError}</Alert>
+                )}
+              </>
+            )}
 
             {(isOwner || isAdmin) && (
               <Link

@@ -1,5 +1,5 @@
 ---
-name: design-system-conformance
+name: frontend-design
 description: >-
   Use this skill for ALL frontend/UI work in this project — building new pages,
   adding or editing components, wiring up forms, modals, tables, dashboards, or
