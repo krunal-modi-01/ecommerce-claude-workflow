@@ -14,6 +14,7 @@ import ProductDetailPage from './pages/ProductDetailPage'
 import SellerProductsPage from './pages/seller/SellerProductsPage'
 import SellerCreateProductPage from './pages/seller/SellerCreateProductPage'
 import SellerEditProductPage from './pages/seller/SellerEditProductPage'
+import CartPage from './pages/CartPage'
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
   const { user, isLoading } = useAuth()
@@ -56,6 +57,14 @@ export default function App() {
       <Route element={<AppShell />}>
         <Route path="/" element={<ProductsPage />} />
         <Route path="/products/:id" element={<ProductDetailPage />} />
+        <Route
+          path="/cart"
+          element={
+            <ProtectedRoute>
+              <CartPage />
+            </ProtectedRoute>
+          }
+        />
         <Route
           path="/profile"
           element={

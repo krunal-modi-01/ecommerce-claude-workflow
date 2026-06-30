@@ -16,6 +16,7 @@ export default defineConfig({
       '/me': { target: 'http://localhost:3000', changeOrigin: true },
       '/products': { target: 'http://localhost:3000', changeOrigin: true },
       '/categories': { target: 'http://localhost:3000', changeOrigin: true },
+      '/cart': { target: 'http://localhost:3000', changeOrigin: true },
       '/seller': { target: 'http://localhost:3000', changeOrigin: true },
       '/admin': { target: 'http://localhost:3000', changeOrigin: true },
     },
